@@ -372,8 +372,8 @@ export default {
     config: {
         title: "Settings & Preferences",
         invalidFile: "The settings file format is invalid",
-        description: "Providers, model selection, sync, and local storage",
-        modalDescription: "Providers, default models, sync, and local storage",
+        description: "User provider, model selection, sync, and local storage",
+        modalDescription: "User provider, default models, sync, and local storage",
         tabs: {
             channels: "Providers",
             localProxy: "Local proxy",
@@ -479,7 +479,7 @@ export default {
         saved: "Settings saved",
         savedContinue: "Settings saved. Continue with your previous request.",
         channels: {
-            description: "Choose a protocol for each provider, fetch its models, assign capabilities, and optionally customize request scripts.",
+            description: "The user provider uses https://ai.wcapis.com/ and only requires an API key plus image and video models.",
             add: "Add provider",
             unnamed: "Unnamed provider",
             numberedName: "Provider {{count}}",

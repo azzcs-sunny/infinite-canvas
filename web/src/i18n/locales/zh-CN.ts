@@ -372,8 +372,8 @@ export default {
     config: {
         title: "配置与用户偏好",
         invalidFile: "配置文件格式不正确",
-        description: "渠道聚合、模型选择、同步与本地存储",
-        modalDescription: "渠道聚合、默认模型、同步与本地存储",
+        description: "用户渠道、模型选择、同步与本地存储",
+        modalDescription: "用户渠道、默认模型、同步与本地存储",
         tabs: {
             channels: "渠道",
             localProxy: "本地代理",
@@ -479,7 +479,7 @@ export default {
         saved: "配置已保存",
         savedContinue: "配置已保存，请继续刚才的请求",
         channels: {
-            description: "每个渠道选择一个协议并拉取模型，为每个模型指定能力（生图/视频/文本/音频），并可自定义调用脚本。",
+            description: "用户渠道固定使用 https://ai.wcapis.com/，只需填写 API Key 并选择生图、视频模型。",
             add: "新增渠道",
             unnamed: "未命名渠道",
             numberedName: "渠道 {{count}}",

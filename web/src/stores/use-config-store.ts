@@ -72,7 +72,12 @@ export type ChannelCredentialsImportResult = {
 
 export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
 const CHANNEL_MODEL_SEPARATOR = "::";
-const OPENAI_BASE_URL = "https://api.openai.com";
+export const WCAPIS_BASE_URL = "https://ai.wcapis.com/";
+export const DEFAULT_IMAGE_MODEL = "gpt-image-2";
+export const DEFAULT_IMAGE_MODELS = [DEFAULT_IMAGE_MODEL, "grok-imagine-image-quality"] as const;
+export const DEFAULT_VIDEO_MODEL = "grok-imagine-video";
+export const DEFAULT_VIDEO_MODELS = [DEFAULT_VIDEO_MODEL, "grok-imagine-video-1.5"] as const;
+const OPENAI_BASE_URL = WCAPIS_BASE_URL;
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
 export const LOCAL_PROXY_PACKAGE = "@basketikun/canvas-proxy";
 export const DEFAULT_LOCAL_PROXY_URL = "http://127.0.0.1:23210";
@@ -90,16 +95,16 @@ export const defaultConfig: AiConfig = {
             apiKey: "",
             apiFormat: "openai",
             models: [
-                { name: "gpt-image-2", capability: "image" },
-                { name: "grok-imagine-video", capability: "video" },
+                ...DEFAULT_IMAGE_MODELS.map((name) => ({ name, capability: "image" as const })),
+                ...DEFAULT_VIDEO_MODELS.map((name) => ({ name, capability: "video" as const })),
                 { name: "gpt-5.5", capability: "text" },
                 { name: "gpt-4o-mini-tts", capability: "audio" },
             ],
         },
     ],
-    model: "default::gpt-image-2",
-    imageModel: "default::gpt-image-2",
-    videoModel: "default::grok-imagine-video",
+    model: `default::${DEFAULT_IMAGE_MODEL}`,
+    imageModel: `default::${DEFAULT_IMAGE_MODEL}`,
+    videoModel: `default::${DEFAULT_VIDEO_MODEL}`,
     textModel: "default::gpt-5.5",
     audioModel: "default::gpt-4o-mini-tts",
     audioVoice: "alloy",
@@ -113,7 +118,7 @@ export const defaultConfig: AiConfig = {
     videoMode: "frames",
     systemPrompt: "",
     reasoningEffort: "auto",
-    models: ["default::gpt-image-2", "default::grok-imagine-video", "default::gpt-5.5", "default::gpt-4o-mini-tts"],
+    models: [...DEFAULT_IMAGE_MODELS.map((name) => `default::${name}`), ...DEFAULT_VIDEO_MODELS.map((name) => `default::${name}`), "default::gpt-5.5", "default::gpt-4o-mini-tts"],
     quality: "auto",
     size: "1:1",
     background: "",
@@ -253,7 +258,8 @@ export const useConfigStore = create<ConfigStore>()(
                     config: {
                         ...config,
                         channelMode: "local",
-                        apiFormat: normalizeApiFormat(config.apiFormat),
+                        baseUrl: WCAPIS_BASE_URL,
+                        apiFormat: "openai",
                         channels,
                         models,
                         imageModel: normalizeModelOptionValue(config.imageModel || config.model, channels),
@@ -429,9 +435,9 @@ export function resolveModelRequestConfig(config: AiConfig, value: string) {
     return {
         ...config,
         model: modelOptionName(value || config.model),
-        baseUrl: channel.baseUrl,
-        apiKey: channel.apiKey,
-        apiFormat: channel.apiFormat,
+        baseUrl: WCAPIS_BASE_URL,
+        apiKey: config.channels[0]?.apiKey || channel.apiKey,
+        apiFormat: "openai",
     };
 }
 
@@ -442,18 +448,26 @@ function normalizeChannels(config: AiConfig) {
             ...channel,
             id: channel.id || (index === 0 ? "default" : `channel-${index + 1}`),
             name: channel.name || (index === 0 ? i18n.t("config.channels.defaultName") : i18n.t("config.channels.indexedName", { index: index + 1 })),
+            ...(index === 0 ? { baseUrl: WCAPIS_BASE_URL, apiFormat: "openai" as const } : {}),
             models: normalizeChannelModels(channel.models),
         }),
     );
+    if (channels[0]) {
+        const defaults = [
+            ...DEFAULT_IMAGE_MODELS.map((name) => ({ name, capability: "image" as const })),
+            ...DEFAULT_VIDEO_MODELS.map((name) => ({ name, capability: "video" as const })),
+        ];
+        channels[0] = { ...channels[0], models: normalizeChannelModels([...channels[0].models, ...defaults]) };
+    }
     if (!channels.length) {
         channels.push(
             createModelChannel({
                 id: "default",
                 name: i18n.t("config.channels.defaultName"),
-                baseUrl: config.baseUrl || defaultConfig.baseUrl,
+                baseUrl: WCAPIS_BASE_URL,
                 apiKey: config.apiKey || "",
-                apiFormat: config.apiFormat || defaultConfig.apiFormat,
-                models: normalizeChannelModels([config.model, config.imageModel, config.videoModel, config.textModel, config.audioModel].map(modelOptionName)),
+                apiFormat: "openai",
+                models: normalizeChannelModels([...DEFAULT_IMAGE_MODELS, ...DEFAULT_VIDEO_MODELS, config.model, config.imageModel, config.videoModel, config.textModel, config.audioModel].map(modelOptionName)),
             }),
         );
     }
