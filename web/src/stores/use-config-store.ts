@@ -73,6 +73,7 @@ export type ChannelCredentialsImportResult = {
 export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
 const CHANNEL_MODEL_SEPARATOR = "::";
 export const WCAPIS_BASE_URL = "https://ai.wcapis.com/";
+// export const WCAPIS_BASE_URL = "http://localhost:3001/";
 export const DEFAULT_IMAGE_MODEL = "gpt-image-2";
 export const DEFAULT_IMAGE_MODELS = [DEFAULT_IMAGE_MODEL, "grok-imagine-image-quality"] as const;
 export const DEFAULT_VIDEO_MODEL = "grok-imagine-video";
@@ -151,7 +152,7 @@ type ConfigStore = {
     clearPromptContinue: () => void;
 };
 
-const VIDEO_KEYWORDS = ["video", "sora", "veo", "kling", "wan", "hailuo"];
+const VIDEO_KEYWORDS = ["video", "sora", "veo", "kling", "wan", "hailuo", "seedance", "runway", "luma"];
 
 export function boolConfig(value: string, fallback: boolean) {
     return value ? value === "true" : fallback;
@@ -318,10 +319,7 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
     };
 }
 
-export function upsertChannelCredentials(
-    config: AiConfig,
-    input: { baseUrl?: string | null; apiKey?: string | null },
-): ChannelCredentialsImportResult & { config: AiConfig } {
+export function upsertChannelCredentials(config: AiConfig, input: { baseUrl?: string | null; apiKey?: string | null }): ChannelCredentialsImportResult & { config: AiConfig } {
     const rawBaseUrl = input.baseUrl?.trim() || "";
     if (!rawBaseUrl) return { status: "missing-base-url", config };
     if (!isHttpBaseUrl(rawBaseUrl)) return { status: "invalid-base-url", config };
@@ -427,7 +425,18 @@ export function resolveModelChannel(config: AiConfig, value: string) {
     const decoded = decodeChannelModel(value);
     const model = decoded?.model || value;
     const matched = decoded ? config.channels.find((channel) => channel.id === decoded.channelId) : config.channels.find((channel) => channel.models.some((item) => item.name === model));
-    return matched || config.channels[0] || createModelChannel({ id: "default", name: i18n.t("config.channels.defaultName"), baseUrl: config.baseUrl, apiKey: config.apiKey, apiFormat: config.apiFormat, models: config.models.map(modelOptionName).map((name) => ({ name, capability: guessCapability(name) })) });
+    return (
+        matched ||
+        config.channels[0] ||
+        createModelChannel({
+            id: "default",
+            name: i18n.t("config.channels.defaultName"),
+            baseUrl: config.baseUrl,
+            apiKey: config.apiKey,
+            apiFormat: config.apiFormat,
+            models: config.models.map(modelOptionName).map((name) => ({ name, capability: guessCapability(name) })),
+        })
+    );
 }
 
 export function resolveModelRequestConfig(config: AiConfig, value: string) {
@@ -454,8 +463,8 @@ function normalizeChannels(config: AiConfig) {
     );
     if (channels[0]) {
         const defaults = [
-            ...DEFAULT_IMAGE_MODELS.map((name) => ({ name, capability: "image" as const })),
-            ...DEFAULT_VIDEO_MODELS.map((name) => ({ name, capability: "video" as const })),
+            ...(channels[0].models.some((model) => model.capability === "image") ? [] : DEFAULT_IMAGE_MODELS.map((name) => ({ name, capability: "image" as const }))),
+            ...(channels[0].models.some((model) => model.capability === "video") ? [] : DEFAULT_VIDEO_MODELS.map((name) => ({ name, capability: "video" as const }))),
         ];
         channels[0] = { ...channels[0], models: normalizeChannelModels([...channels[0].models, ...defaults]) };
     }

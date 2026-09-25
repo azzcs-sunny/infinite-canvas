@@ -1,6 +1,6 @@
 import { App, Button, Form, Input, Modal, Progress, Select, Tabs } from "antd";
 import type { TFunction } from "i18next";
-import { Cloud, Download, RefreshCw, Upload, Wifi } from "lucide-react";
+import { Cloud, Download, RefreshCw, Save, Upload, Wifi } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -9,11 +9,12 @@ import { ConfigLocalProxy } from "@/components/layout/config-local-proxy";
 import { ConfigPromptSources } from "@/components/layout/config-prompt-sources";
 import { ConfigLocalStorage } from "@/components/layout/config-local-storage";
 import type { AppLocale } from "@/i18n";
+import { fetchChannelModels } from "@/services/api/image";
 import { exportAppConfig, importAppConfig } from "@/services/config-file";
 import { syncAppDataToWebdav, type AppSyncDomainKey, type AppSyncProgressEvent } from "@/services/app-sync";
 import { testWebdavConnection, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
-import { createModelChannel, DEFAULT_IMAGE_MODELS, DEFAULT_VIDEO_MODELS, modelOptionName, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, WCAPIS_BASE_URL, type AiConfig, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
+import { createModelChannel, DEFAULT_IMAGE_MODELS, DEFAULT_VIDEO_MODELS, guessCapability, modelOptionName, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, WCAPIS_BASE_URL, type AiConfig, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 
 type ModelGroup = {
     capability: ModelCapability;
@@ -26,6 +27,13 @@ type WebdavDomainProgress = {
     current?: number;
     total?: number;
     status?: "active" | "success" | "exception";
+};
+
+type ChannelSettingsDraft = {
+    apiKey: string;
+    imageModel: string;
+    videoModel: string;
+    models: ModelChannel["models"];
 };
 
 const modelGroups: ModelGroup[] = [
@@ -52,13 +60,18 @@ function createWebdavDomainProgress(): Record<AppSyncDomainKey, WebdavDomainProg
 export function AppConfigPanel({ showDoneButton = false, initialTab = "channels" }: { showDoneButton?: boolean; initialTab?: ConfigTabKey }) {
     const { message } = App.useApp();
     const { i18n, t } = useTranslation();
+    const config = useConfigStore((state) => state.config);
+    const channel = config.channels[0] || createModelChannel({ id: "default" });
     const configInputRef = useRef<HTMLInputElement>(null);
     const [activeTab, setActiveTab] = useState<ConfigTabKey>(initialTab);
+    const [channelDraft, setChannelDraft] = useState<ChannelSettingsDraft>(() => ({ apiKey: channel.apiKey, imageModel: modelOptionName(config.imageModel), videoModel: modelOptionName(config.videoModel), models: channel.models }));
+    const [loadingModels, setLoadingModels] = useState(false);
+    const fetchedModelsRef = useRef<{ apiKey: string; names: string[] } | null>(null);
+    const pendingModelsRef = useRef<{ apiKey: string; promise: Promise<string[]> } | null>(null);
     const [testingWebdav, setTestingWebdav] = useState(false);
     const [syncingWebdav, setSyncingWebdav] = useState(false);
     const [webdavSyncStatus, setWebdavSyncStatus] = useState("");
     const [webdavDomainProgress, setWebdavDomainProgress] = useState(createWebdavDomainProgress);
-    const config = useConfigStore((state) => state.config);
     const webdav = useConfigStore((state) => state.webdav);
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const updateWebdavConfig = useConfigStore((state) => state.updateWebdavConfig);
@@ -68,18 +81,10 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const webdavReady = Boolean(webdav.url.trim());
     const locale = i18n.resolvedLanguage as AppLocale;
     useEffect(() => setActiveTab(initialTab), [initialTab]);
+    useEffect(() => setChannelDraft({ apiKey: channel.apiKey, imageModel: modelOptionName(config.imageModel), videoModel: modelOptionName(config.videoModel), models: channel.models }), [channel.apiKey, channel.models, config.imageModel, config.videoModel]);
 
     const saveConfig = (nextConfig: AiConfig) => {
         (Object.keys(nextConfig) as Array<keyof AiConfig>).forEach((key) => updateConfig(key, nextConfig[key]));
-    };
-
-    const finishConfig = () => {
-        const channel = config.channels[0];
-        const ready = Boolean(channel?.apiKey.trim() && config.imageModel && config.videoModel);
-        setConfigDialogOpen(false);
-        if (!ready) return;
-        message.success(t(shouldPromptContinue ? "config.savedContinue" : "config.saved"));
-        clearPromptContinue();
     };
 
     const loadConfigFile = async (file: File) => {
@@ -93,25 +98,97 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
         }
     };
 
-    const updateChannels = (channels: ModelChannel[]) => saveConfig(withChannels(config, channels));
-    const channel = config.channels[0] || createModelChannel({ id: "default" });
-    const updateUserChannel = (patch: Partial<ModelChannel>) => updateChannels([{ ...channel, ...patch, baseUrl: WCAPIS_BASE_URL, apiFormat: "openai" }, ...config.channels.slice(1)]);
     const modelsFor = (capability: "image" | "video") => {
-        const current = capability === "image" ? modelOptionName(config.imageModel) : modelOptionName(config.videoModel);
+        const current = channelDraft[capability === "image" ? "imageModel" : "videoModel"];
         const defaults = defaultChannelModels[capability];
-        return Array.from(new Set([...defaults, current, ...channel.models.filter((model) => model.capability === capability).map((model) => model.name)].filter(Boolean)));
+        const configured = channelDraft.models.filter((model) => model.capability === capability).map((model) => model.name);
+        return Array.from(new Set([current, ...configured, ...(configured.length ? [] : defaults)].filter(Boolean)));
     };
     const modelValueFor = (capability: "image" | "video") => {
-        const configured = modelOptionName(capability === "image" ? config.imageModel : config.videoModel);
+        const configured = channelDraft[capability === "image" ? "imageModel" : "videoModel"];
         const name = modelsFor(capability).includes(configured) ? configured : defaultChannelModels[capability][0];
         return `${channel.id}::${name}`;
     };
     const setUserModel = (capability: "image" | "video", name: string) => {
-        const existing = channel.models.filter((model) => model.name !== name && model.capability !== capability);
-        const selected = { name, capability } satisfies ModelChannel["models"][number];
-        const models = [...existing, selected];
-        updateUserChannel({ models });
-        updateConfig(capability === "image" ? "imageModel" : "videoModel", `${channel.id}::${name}`);
+        setChannelDraft((current) => ({ ...current, [capability === "image" ? "imageModel" : "videoModel"]: name }));
+    };
+    const applyFetchedModels = (draft: ChannelSettingsDraft, names: string[]) => {
+        const currentByName = new Map(draft.models.map((model) => [model.name, model]));
+        const fetched = names.map((name) => ({ ...currentByName.get(name), name, capability: guessCapability(name) }));
+        const imageModels = fetched.filter((model) => model.capability === "image");
+        const videoModels = fetched.filter((model) => model.capability === "video");
+        const models = [
+            ...draft.models.filter((model) => model.capability !== "image" && model.capability !== "video"),
+            ...(imageModels.length ? imageModels : draft.models.filter((model) => model.capability === "image")),
+            ...(videoModels.length ? videoModels : draft.models.filter((model) => model.capability === "video")),
+        ];
+        const imageNames = models.filter((model) => model.capability === "image").map((model) => model.name);
+        const videoNames = models.filter((model) => model.capability === "video").map((model) => model.name);
+        return {
+            ...draft,
+            models,
+            imageModel: imageNames.includes(draft.imageModel) ? draft.imageModel : imageNames[0] || DEFAULT_IMAGE_MODELS[0],
+            videoModel: videoNames.includes(draft.videoModel) ? draft.videoModel : videoNames[0] || DEFAULT_VIDEO_MODELS[0],
+        };
+    };
+    const requestChannelModels = (apiKey: string) => {
+        if (fetchedModelsRef.current?.apiKey === apiKey) return Promise.resolve(fetchedModelsRef.current.names);
+        if (pendingModelsRef.current?.apiKey === apiKey) return pendingModelsRef.current.promise;
+        setLoadingModels(true);
+        const promise = fetchChannelModels({ ...channel, baseUrl: WCAPIS_BASE_URL, apiKey, apiFormat: "openai" })
+            .then((names) => {
+                fetchedModelsRef.current = { apiKey, names };
+                return names;
+            })
+            .catch((error) => {
+                message.error(error instanceof Error ? error.message : t("apiErrors.modelReadFailed"));
+                throw error;
+            })
+            .finally(() => {
+                if (pendingModelsRef.current?.promise === promise) {
+                    pendingModelsRef.current = null;
+                    setLoadingModels(false);
+                }
+            });
+        pendingModelsRef.current = { apiKey, promise };
+        return promise;
+    };
+    const refreshChannelModels = async (draft: ChannelSettingsDraft) => {
+        const apiKey = draft.apiKey.trim();
+        if (!apiKey) return draft;
+        try {
+            const names = await requestChannelModels(apiKey);
+            const nextDraft = applyFetchedModels(draft, names);
+            setChannelDraft((current) => (current.apiKey.trim() === apiKey ? applyFetchedModels(current, names) : current));
+            return nextDraft;
+        } catch {
+            return draft;
+        }
+    };
+    const persistChannel = (draft: ChannelSettingsDraft) => {
+        const imageModel = draft.imageModel;
+        const videoModel = draft.videoModel;
+        const models = [...draft.models];
+        if (!models.some((model) => model.name === imageModel && model.capability === "image")) models.push({ name: imageModel, capability: "image" });
+        if (!models.some((model) => model.name === videoModel && model.capability === "video")) models.push({ name: videoModel, capability: "video" });
+        const nextConfig = withChannels(
+            { ...config, imageModel: `${channel.id}::${imageModel}`, videoModel: `${channel.id}::${videoModel}` },
+            [{ ...channel, apiKey: draft.apiKey, models }, ...config.channels.slice(1)],
+        );
+        saveConfig(nextConfig);
+        return nextConfig;
+    };
+    const saveChannel = async () => {
+        persistChannel(await refreshChannelModels(channelDraft));
+        message.success(t("config.saved"));
+    };
+    const finishConfig = async () => {
+        const nextConfig = persistChannel(await refreshChannelModels(channelDraft));
+        const ready = Boolean(nextConfig.channels[0]?.apiKey.trim() && nextConfig.imageModel && nextConfig.videoModel);
+        setConfigDialogOpen(false);
+        if (!ready) return;
+        message.success(t(shouldPromptContinue ? "config.savedContinue" : "config.saved"));
+        clearPromptContinue();
     };
 
     const testWebdav = async () => {
@@ -189,15 +266,22 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                             <div className="py-1">
                                 <div className="grid gap-4 md:grid-cols-2">
                                     <Form.Item label="API Key" className="mb-1 md:col-span-2">
-                                        <Input.Password value={channel.apiKey} placeholder="sk-..." onChange={(event) => updateUserChannel({ apiKey: event.target.value })} />
+                                        <Input.Password value={channelDraft.apiKey} placeholder="sk-..." onChange={(event) => setChannelDraft((current) => ({ ...current, apiKey: event.target.value }))} onBlur={() => void refreshChannelModels(channelDraft)} />
                                     </Form.Item>
                                     <Form.Item label={t("config.preferences.defaultImageModel")} className="mb-1">
-                                        <Select className="w-full" showSearch optionFilterProp="label" value={modelValueFor("image")} options={modelsFor("image").map((name) => ({ label: name, value: `${channel.id}::${name}` }))} onChange={(value) => setUserModel("image", modelOptionName(value))} />
+                                        <Select className="w-full" showSearch loading={loadingModels} optionFilterProp="label" value={modelValueFor("image")} options={modelsFor("image").map((name) => ({ label: name, value: `${channel.id}::${name}` }))} onChange={(value) => setUserModel("image", modelOptionName(value))} />
                                     </Form.Item>
                                     <Form.Item label={t("config.preferences.defaultVideoModel")} className="mb-1">
-                                        <Select className="w-full" showSearch optionFilterProp="label" value={modelValueFor("video")} options={modelsFor("video").map((name) => ({ label: name, value: `${channel.id}::${name}` }))} onChange={(value) => setUserModel("video", modelOptionName(value))} />
+                                        <Select className="w-full" showSearch loading={loadingModels} optionFilterProp="label" value={modelValueFor("video")} options={modelsFor("video").map((name) => ({ label: name, value: `${channel.id}::${name}` }))} onChange={(value) => setUserModel("video", modelOptionName(value))} />
                                     </Form.Item>
                                 </div>
+                                {!showDoneButton ? (
+                                    <div className="mt-4 flex justify-end">
+                                        <Button type="primary" icon={<Save className="size-4" />} onClick={() => void saveChannel()}>
+                                            {t("common.save")}
+                                        </Button>
+                                    </div>
+                                ) : null}
                             </div>
                         ),
                     },
@@ -316,7 +400,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
             />
             {showDoneButton ? (
                 <div className="mt-4 flex justify-end">
-                    <Button type="primary" onClick={finishConfig}>
+                    <Button type="primary" onClick={() => void finishConfig()}>
                         {t("common.done")}
                     </Button>
                 </div>
@@ -344,6 +428,7 @@ export function AppConfigModal() {
             onCancel={() => setConfigDialogOpen(false)}
             styles={{ body: { maxHeight: "72vh", overflowY: "auto", paddingRight: 12 } }}
             footer={null}
+            destroyOnHidden
         >
             <AppConfigPanel showDoneButton initialTab={configTab} />
         </Modal>
@@ -357,7 +442,7 @@ function withChannels(config: AiConfig, channels: ModelChannel[]): AiConfig {
         channels: normalizedChannels,
         models: modelOptionsFromChannels(normalizedChannels),
         baseUrl: WCAPIS_BASE_URL,
-        apiKey: normalizedChannels[0]?.apiKey || config.apiKey,
+        apiKey: normalizedChannels[0]?.apiKey ?? config.apiKey,
         apiFormat: "openai",
     };
     return {
